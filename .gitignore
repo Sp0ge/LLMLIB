@@ -6,5 +6,6 @@ dist/
 disk.data
 data.cache
 .portableai-*
+bundle-models/
 .venv/
 .DS_Store

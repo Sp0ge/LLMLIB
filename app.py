@@ -20,6 +20,7 @@ from vault import add_file, load, save
 from storage import EncryptedStore
 from ai import LocalModel, hybrid_search
 from updater import CURRENT_VERSION, MANIFEST_URL, check_update, stage_asset, prepare_replacement, launch_update_helper
+from bundled_models import model_path, model_fingerprint
 
 
 def storage_dir():
@@ -166,11 +167,11 @@ class App(QMainWindow):
         self.resize(1050, 700)
         main = QWidget(); self.setCentralWidget(main)
         layout = QVBoxLayout(main)
-        self.status = QLabel('Локальный режим. Импортируйте две модели и выберите движок в настройках.')
+        self.status = QLabel('Офлайн-режим. Обе модели входят в приложение.')
         self.status.setWordWrap(True); layout.addWidget(self.status)
         bar = QHBoxLayout(); layout.addLayout(bar)
         for label, action in [('Добавить файлы', self.import_files), ('Удалить', self.delete_file),
-                              ('Переиндексация', self.reindex), ('Обновить модели', self.models),
+                              ('Переиндексация', self.reindex),
                               ('Настройки CPU', self.performance), ('Очистить историю', self.clear_history),
                               ('Обновить программу', self.updates),
                               ('Полный сброс', self.reset)]:
@@ -328,13 +329,10 @@ class App(QMainWindow):
 
         self.password = pw
 
-        self.runtime_path = (
-            bundled_runtime()
-            or self.cache.get('runtime_path')
-        )
+        self.runtime_path = bundled_runtime()
 
-        llm_present = self.model_entry('llm') is not None
-        embedding_present = self.model_entry('embedding') is not None
+        llm_present = model_path('llm') is not None
+        embedding_present = model_path('embedding') is not None
 
         self.status.setText(
             'Офлайн-режим'
@@ -403,30 +401,27 @@ class App(QMainWindow):
             self.chat.append(html.escape(item.get('answer', '')))
         n = len(self.data['files']); indexed = sum(len(x) for x in self.data.get('index', {}).values())
         self.chat.append(f'На носителе файлов: {n}. Проиндексировано фрагментов: {indexed}. Что вы хотите найти?')
-        if not self.model_entry('llm'):
+        if not model_path('llm'):
             self.chat.append('Языковая модель ещё не загружена.')
 
     def summarize(self):
-        if not self.store or not self.runtime_path or not self.model_entry('llm') or (self.worker and self.worker.isRunning()): return
+        if not self.store or not self.runtime_path or not model_path('llm') or (self.worker and self.worker.isRunning()): return
         live = {item['id'] for item in self.data['files']}
         hits = [group[0] for key, group in self.data.get('index', {}).items() if key in live and group][:3]
         if not hits: return
-        runtime, disk, password = self.runtime_path, self.disk, self.password
-        model = self.model_entry('llm')
+        runtime = self.runtime_path
+        model = model_path('llm')
         threads = max(1, min(int(self.cache.get('threads', 2)), 4))
         def run():
-            with tempfile.TemporaryDirectory(prefix='portableai-model-') as folder, EncryptedStore(disk, password) as store:
-                path = Path(folder) / 'llm.gguf'
-                with path.open('wb') as output: store.read_to(model, output)
-                with LocalModel(runtime, path, threads=threads) as engine:
-                    return engine.answer('Кратко опиши, какая информация есть в источниках.', hits)
+            with LocalModel(runtime, model, threads=threads) as engine:
+                return engine.answer('Кратко опиши, какая информация есть в источниках.', hits)
         def done(answer, error):
             if error:
                 self.status.setText('Сводка недоступна: ' + error)
             elif answer:
                 self.chat.append('Сводка по источникам: ' + html.escape(answer))
                 self.chat.append('Что вы хотели бы посмотреть?')
-        self.run_task(run, done, 'Расшифровывается модель и подготавливается сводка…')
+        self.run_task(run, done, 'Готовится сводка по найденным материалам…')
 
     def import_files(self):
         if not self.admin(): return
@@ -482,10 +477,10 @@ class App(QMainWindow):
         old_warnings = self.data.get('warnings', {})
         base = {key: value for key, value in self.data.items() if key not in {'index', 'warnings', 'files'}}
         disk, password = self.disk, self.password
-        model = self.model_entry('embedding')
+        model = model_path('embedding')
         runtime = self.runtime_path
         threads = max(1, min(int(self.cache.get('threads', 2)), 4))
-        embed_version = model['sha256'] + ':e5-v2-600' if model else None
+        embed_version = model_fingerprint('embedding') + ':e5-v2-600' if model else None
 
         def calculate():
             result, warnings = {}, {}
@@ -504,15 +499,12 @@ class App(QMainWindow):
                     result[key], warnings[key] = chunks(blocks), warn
                     for i, chunk in enumerate(result[key]): chunk['id'] = key + ':' + str(i)
                 if model and runtime and any(group for group in result.values()):
-                    with tempfile.TemporaryDirectory(prefix='portableai-model-') as folder:
-                        model_path = Path(folder) / 'embedding.gguf'
-                        with model_path.open('wb') as output: store.read_to(model, output)
-                        with LocalModel(runtime, model_path, embeddings=True, threads=threads) as engine:
-                            for group in result.values():
-                                for chunk in group:
-                                    if chunk.get('embedding_version') != embed_version:
-                                        chunk['embedding'] = engine.embed('passage: ' + chunk['text'][:600])
-                                        chunk['embedding_version'] = embed_version
+                    with LocalModel(runtime, model, embeddings=True, threads=threads) as engine:
+                        for group in result.values():
+                            for chunk in group:
+                                if chunk.get('embedding_version') != embed_version:
+                                    chunk['embedding'] = engine.embed('passage: ' + chunk['text'][:600])
+                                    chunk['embedding_version'] = embed_version
             return {**base, 'files': records, 'index': result, 'warnings': warnings}
 
         def done(candidate, error):
@@ -548,37 +540,30 @@ class App(QMainWindow):
         self.query.clear(); self.chat.append('Вы: ' + html.escape(query))
         live_ids = {entry['id'] for entry in self.data['files']}
         all_chunks = [c for key, group in self.data.get('index', {}).items() if key in live_ids for c in group]
-        embedding_model = self.model_entry('embedding')
+        embedding_model = model_path('embedding')
         if embedding_model:
-            version = embedding_model['sha256'] + ':e5-v2-600'
+            version = model_fingerprint('embedding') + ':e5-v2-600'
             all_chunks = [c if c.get('embedding_version') == version else {k: v for k, v in c.items() if k != 'embedding'} for c in all_chunks]
         lexical = search(all_chunks, query)
-        if not self.runtime_path or not (self.model_entry('embedding') or self.model_entry('llm')):
+        if not self.runtime_path or not (model_path('embedding') or model_path('llm')):
             self.finish_answer(query, lexical, None, None); return
-        runtime, disk, password = self.runtime_path, self.disk, self.password
-        embedding_entry, llm_entry = self.model_entry('embedding'), self.model_entry('llm')
+        runtime = self.runtime_path
+        embedding_entry, llm_entry = model_path('embedding'), model_path('llm')
         history = list(self.cache.get('messages', []))
         threads = max(1, min(int(self.cache.get('threads', 2)), 4))
         def calculate():
             hits, answer = lexical, None
-            with tempfile.TemporaryDirectory(prefix='portableai-model-') as folder, EncryptedStore(disk, password) as store:
-                if embedding_entry:
-                    path = Path(folder) / 'embedding.gguf'
-                    with path.open('wb') as output: store.read_to(embedding_entry, output)
-                    with LocalModel(runtime, path, embeddings=True, threads=threads) as engine:
-                        hits = hybrid_search(all_chunks, engine.embed('query: ' + query), lexical)
-                    path.unlink(missing_ok=True)
-                if llm_entry and hits:
-                    path = Path(folder) / 'llm.gguf'
-                    with path.open('wb') as output: store.read_to(llm_entry, output)
-                    with LocalModel(runtime, path, threads=threads) as engine:
-                        answer = engine.answer(query, hits, history)
-                    path.unlink(missing_ok=True)
+            if embedding_entry:
+                with LocalModel(runtime, embedding_entry, embeddings=True, threads=threads) as engine:
+                    hits = hybrid_search(all_chunks, engine.embed('query: ' + query), lexical)
+            if llm_entry and hits:
+                with LocalModel(runtime, llm_entry, threads=threads) as engine:
+                    answer = engine.answer(query, hits, history)
             return hits, answer
         def done(result, error):
             hits, answer = result if result else (lexical, None)
             self.finish_answer(query, hits, answer, error)
-        self.run_task(calculate, done, 'Расшифровываются модели и обрабатывается запрос…')
+        self.run_task(calculate, done, 'Запускаются встроенные модели и обрабатывается запрос…')
 
     def finish_answer(self, query, hits, answer, error):
         self.results = hits
@@ -680,49 +665,6 @@ class App(QMainWindow):
         dialog = AudioViewer(entry['name'], output.getvalue(), self); self.viewers.append(dialog)
         dialog.finished.connect(lambda: self.viewers.remove(dialog) if dialog in self.viewers else None)
         dialog.show()
-
-    def models(self):
-        if not self.admin(): return
-        kinds = {'Языковая модель (LLM)': 'llm', 'Модель эмбеддингов': 'embedding'}
-        label, ok = QInputDialog.getItem(self, 'Модели ИИ', 'Какую модель заменить?', list(kinds), 0, False)
-        if not ok: return
-        kind = kinds[label]
-        path, _ = QFileDialog.getOpenFileName(self, 'Выберите локальный файл модели', filter='Модель GGUF (*.gguf)')
-        if not path: return
-        try:
-            with open(path, 'rb') as source:
-                if source.read(4) != b'GGUF': raise ValueError('Файл не является GGUF')
-            disk, password = self.disk, self.password
-            def import_model():
-                with EncryptedStore(disk, password) as store, open(path, 'rb') as source:
-                    store.add_stream(Path(path).name, source, kind=kind, replace_kind=True)
-            def done(_, error):
-                if error:
-                    QMessageBox.critical(self, 'Ошибка импорта модели', error); return
-                self.reload_store()
-                if kind == 'embedding':
-                    for group in self.data.get('index', {}).values():
-                        for chunk in group:
-                            chunk.pop('embedding', None); chunk.pop('embedding_version', None)
-                runtime = bundled_runtime() or self.cache.get('runtime_path')
-                if not runtime or not Path(runtime).is_file():
-                    runtime, _ = QFileDialog.getOpenFileName(self, 'Выберите локальный llama-server')
-                if not runtime: return
-                self.runtime_path = runtime
-                self.cache['runtime_path'] = runtime
-                try: save(self.cache_path, self.password, self.cache)
-                except Exception as exc: QMessageBox.warning(self, 'Не сохранён путь к движку', str(exc))
-                if kind == 'embedding':
-                    self.commit(self.data, lambda ok: self.reindex(auth=False, force=True) if ok else None)
-                else:
-                    QMessageBox.information(self, 'Модели', f'Модель «{label}» импортирована. Вторую можно оставить без изменений.')
-            self.run_task(import_model, done, 'Модель проверяется и шифруется в disk.data…')
-        except Exception as exc:
-            QMessageBox.critical(self, 'Ошибка импорта модели', str(exc))
-
-    def model_entry(self, kind):
-        entries = [entry for entry in self.store.manifest['objects'] if entry['kind'] == kind]
-        return entries[-1] if entries else None
 
     def updates(self, automatic=False):
         if not automatic and not self.admin(): return
