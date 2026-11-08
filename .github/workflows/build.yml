@@ -1,0 +1,91 @@
+name: Build PortableAI development package
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+            server: llama-build/bin/Release/llama-server.exe
+          - os: macos-15
+            platform: macos-arm64
+            server: llama-build/bin/llama-server
+          - os: macos-15-intel
+            platform: macos-x64
+            server: llama-build/bin/llama-server
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Test application
+        run: python -m unittest discover -s tests -v
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - name: Fetch pinned local inference engine
+        run: |
+          git clone --depth 1 --branch b10488 https://github.com/ggml-org/llama.cpp.git llama-source
+          python -c "import subprocess; assert subprocess.check_output(['git','-C','llama-source','rev-parse','HEAD'], text=True).strip() == '9d77fa17254e1dee4b9e92504c91611a60b1359f'"
+      - name: Build CPU-only engine
+        run: |
+          cmake -S llama-source -B llama-build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=OFF -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_CURL=OFF
+          cmake --build llama-build --config Release --target llama-server --parallel 4
+      - name: Package application
+        run: python package.py ${{ matrix.server }}
+      - name: Archive macOS application
+        if: runner.os == 'macOS'
+        run: ditto -c -k --norsrc --keepParent dist/PortableAI.app dist/PortableAI-${{ matrix.platform }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PortableAI-${{ matrix.platform }}
+          path: |
+            dist/PortableAI.exe
+            dist/PortableAI-${{ matrix.platform }}.zip
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: PortableAI-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install cryptography==45.0.7
+      - name: Sign the update manifest
+        env:
+          PORTABLEAI_UPDATE_KEY_PEM: ${{ secrets.PORTABLEAI_UPDATE_KEY_PEM }}
+        run: |
+          test -n "$PORTABLEAI_UPDATE_KEY_PEM" || { echo 'Add the matching Ed25519 PEM as the PORTABLEAI_UPDATE_KEY_PEM Actions secret.' >&2; exit 1; }
+          printf '%s' "$PORTABLEAI_UPDATE_KEY_PEM" > "$RUNNER_TEMP/portableai-update-key.pem"
+          python tools/sign_update.py \
+            --key "$RUNNER_TEMP/portableai-update-key.pem" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --windows dist/PortableAI.exe \
+            --macos-arm64 dist/PortableAI-macos-arm64.zip \
+            --macos-x64 dist/PortableAI-macos-x64.zip \
+            --output dist/portableai-update.json
+          rm -f "$RUNNER_TEMP/portableai-update-key.pem"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/PortableAI.exe
+            dist/PortableAI-macos-arm64.zip
+            dist/PortableAI-macos-x64.zip
+            dist/portableai-update.json

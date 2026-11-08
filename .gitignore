@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+disk.data
+data.cache
+.portableai-*
+.venv/
+.DS_Store
