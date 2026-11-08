@@ -2,7 +2,7 @@ name: Build PortableAI packages
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'codex/**']
     tags: ['v*.*.*']
 permissions:
   contents: read
