@@ -164,34 +164,60 @@ class App(QMainWindow):
         self.worker = None
         self.update_worker = None
         self.setWindowTitle(f'Portable AI USB — beta {CURRENT_VERSION}')
-        self.resize(1050, 700)
-        main = QWidget(); self.setCentralWidget(main)
+        self.resize(1240, 820); self.setMinimumSize(980, 680)
+        main = QWidget(); main.setObjectName('mainSurface'); self.setCentralWidget(main)
         layout = QVBoxLayout(main)
-        self.status = QLabel('Офлайн-режим. Обе модели входят в приложение.')
-        self.status.setWordWrap(True); layout.addWidget(self.status)
-        bar = QHBoxLayout(); layout.addLayout(bar)
+        layout.setContentsMargins(26, 22, 26, 22); layout.setSpacing(15)
+        masthead = QHBoxLayout()
+        brand = QVBoxLayout()
+        title = QLabel('NIGHT CITY  /  DATA CONSULTANT'); title.setObjectName('brandTitle')
+        subtitle = QLabel('Локальный архив знаний  •  автономный режим')
+        subtitle.setObjectName('brandSubtitle')
+        brand.addWidget(title); brand.addWidget(subtitle); masthead.addLayout(brand, 1)
+        self.status = QLabel('●  ЗАЩИЩЁННОЕ СОЕДИНЕНИЕ  /  OFFLINE')
+        self.status.setObjectName('statusBanner'); self.status.setWordWrap(True); masthead.addWidget(self.status)
+        layout.addLayout(masthead)
+        bar = QHBoxLayout(); bar.setSpacing(8); layout.addLayout(bar)
         for label, action in [('Добавить файлы', self.import_files), ('Удалить', self.delete_file),
                               ('Переиндексация', self.reindex),
                               ('Настройки CPU', self.performance), ('Очистить историю', self.clear_history),
                               ('Обновить программу', self.updates),
                               ('Полный сброс', self.reset)]:
-            button = QPushButton(label); button.clicked.connect(lambda checked=False, fn=action: fn()); bar.addWidget(button)
+            button = QPushButton(label)
+            if label == 'Добавить файлы': button.setObjectName('primaryAction')
+            button.clicked.connect(lambda checked=False, fn=action: fn()); bar.addWidget(button)
         split = QSplitter(); layout.addWidget(split, 1)
         left = QWidget(); left_layout = QVBoxLayout(left)
-        left_layout.addWidget(QLabel('Файлы'))
-        self.files = QListWidget(); left_layout.addWidget(self.files)
+        left_layout.setContentsMargins(0, 0, 8, 0)
+        file_title = QLabel('АРХИВ'); file_title.setObjectName('sectionTitle'); left_layout.addWidget(file_title)
+        file_hint = QLabel('Файлы на защищённом носителе'); file_hint.setObjectName('mutedText'); left_layout.addWidget(file_hint)
+        self.files = QListWidget(); self.files.setObjectName('fileList'); left_layout.addWidget(self.files)
         self.files.itemDoubleClicked.connect(self.open_file)
         split.addWidget(left)
-        right = QWidget(); right_layout = QVBoxLayout(right)
-        self.chat = QTextBrowser(); self.chat.setOpenExternalLinks(False); right_layout.addWidget(self.chat, 1)
-        self.sources = QListWidget(); self.sources.itemDoubleClicked.connect(self.open_source)
-        right_layout.addWidget(QLabel('Найденные источники — двойной щелчок открывает окно'))
+        right = QWidget(); right_layout = QVBoxLayout(right); right_layout.setContentsMargins(8, 0, 0, 0)
+        chat_title = QLabel('КОНСУЛЬТАНТ ПО ДАННЫМ'); chat_title.setObjectName('sectionTitle'); right_layout.addWidget(chat_title)
+        self.chat = QTextBrowser(); self.chat.setObjectName('chatPanel'); self.chat.setOpenExternalLinks(False); right_layout.addWidget(self.chat, 1)
+        source_title = QLabel('ИСТОЧНИКИ  /  дважды щёлкните, чтобы открыть'); source_title.setObjectName('sectionTitle')
+        right_layout.addWidget(source_title)
+        self.sources = QListWidget(); self.sources.setObjectName('sourceList'); self.sources.itemDoubleClicked.connect(self.open_source)
         right_layout.addWidget(self.sources)
         row = QHBoxLayout(); right_layout.addLayout(row)
-        self.query = QLineEdit(); self.query.setPlaceholderText('Введите вопрос или слова для поиска')
+        self.query = QLineEdit(); self.query.setObjectName('queryInput')
+        self.query.setPlaceholderText('Опишите, что ищете, или задайте вопрос по материалам…')
         self.query.returnPressed.connect(self.ask); row.addWidget(self.query, 1)
-        button = QPushButton('Найти'); button.clicked.connect(self.ask); row.addWidget(button)
-        split.addWidget(right); split.setSizes([250, 800])
+        button = QPushButton('СПРОСИТЬ  ↗'); button.setObjectName('primaryAction'); button.clicked.connect(self.ask); row.addWidget(button)
+        split.addWidget(right); split.setSizes([285, 910]); split.setObjectName('contentSplit')
+
+    def chat_line(self, role, text):
+        """Append a safely escaped, role-colored message to the conversation."""
+        color = '#f5c842' if role == 'you' else '#48e5ee'
+        label = 'ВЫ' if role == 'you' else 'КОНСУЛЬТАНТ'
+        safe = html.escape(str(text)).replace('\n', '<br>')
+        self.chat.append(
+            f'<div style="margin:8px 2px 12px;padding:10px 13px;'
+            f'background:#101a27;border-left:2px solid {color};color:#e7edf5">'
+            f'<span style="color:{color};font-size:10px;font-weight:bold;letter-spacing:1px">{label}</span>'
+            f'<div style="margin-top:5px;line-height:1.5">{safe}</div></div>')
 
     def start(self):
         if not self.directory.is_dir():
@@ -397,12 +423,14 @@ class App(QMainWindow):
 
     def greet(self):
         for item in self.cache.get('messages', [])[-20:]:
-            self.chat.append('Вы: ' + html.escape(item.get('question', '')))
-            self.chat.append(html.escape(item.get('answer', '')))
+            self.chat_line('you', item.get('question', ''))
+            self.chat_line('assistant', item.get('answer', ''))
         n = len(self.data['files']); indexed = sum(len(x) for x in self.data.get('index', {}).values())
-        self.chat.append(f'На носителе файлов: {n}. Проиндексировано фрагментов: {indexed}. Что вы хотите найти?')
+        self.chat_line('assistant', f'Я изучил архив: файлов — {n}, фрагментов — {indexed}. '
+                       'Опишите, что хотите найти, или задайте вопрос по содержимому. '
+                       'Я укажу найденные источники и покажу нужный фрагмент.')
         if not model_path('llm'):
-            self.chat.append('Языковая модель ещё не загружена.')
+            self.chat_line('assistant', 'Встроенная языковая модель недоступна в этой сборке.')
 
     def summarize(self):
         if not self.store or not self.runtime_path or not model_path('llm') or (self.worker and self.worker.isRunning()): return
@@ -419,8 +447,7 @@ class App(QMainWindow):
             if error:
                 self.status.setText('Сводка недоступна: ' + error)
             elif answer:
-                self.chat.append('Сводка по источникам: ' + html.escape(answer))
-                self.chat.append('Что вы хотели бы посмотреть?')
+                self.chat_line('assistant', 'Краткий обзор архива:\n' + answer + '\n\nЧто хотите изучить подробнее?')
         self.run_task(run, done, 'Готовится сводка по найденным материалам…')
 
     def import_files(self):
@@ -537,7 +564,7 @@ class App(QMainWindow):
             QMessageBox.information(self, 'Слишком длинный запрос', 'Введите запрос короче 1 000 символов.')
             return
         self.last_query = query
-        self.query.clear(); self.chat.append('Вы: ' + html.escape(query))
+        self.query.clear(); self.chat_line('you', query)
         live_ids = {entry['id'] for entry in self.data['files']}
         all_chunks = [c for key, group in self.data.get('index', {}).items() if key in live_ids for c in group]
         embedding_model = model_path('embedding')
@@ -570,11 +597,14 @@ class App(QMainWindow):
         if error: QMessageBox.warning(self, 'ИИ недоступен', error)
         self.sources.clear()
         for hit in self.results: self.sources.addItem(hit['path'] + ' — ' + hit['locator'])
-        if self.results and any(word in query.casefold() for word in ('покажи', 'открой', 'посмотреть')):
+        search_intent = any(word in query.casefold() for word in (
+            'покажи', 'открой', 'посмотреть', 'найди', 'найти', 'поиск',
+            'где находится', 'в каком файле', 'какой файл', 'какой документ'))
+        if self.results and search_intent:
             self.sources.setCurrentRow(0); self.open_source()
         if answer is None:
             answer = 'Найдены фрагменты. Откройте источник двойным щелчком.' if self.results else 'Совпадений не найдено. Часть файлов могла быть пропущена при индексации.'
-        self.chat.append(html.escape(answer))
+        self.chat_line('assistant', answer)
         context_snapshot = [{'path': hit.get('path', '')[:300], 'locator': hit.get('locator', '')[:200],
                              'text': hit.get('text', '')[:600]} for hit in hits[:3]]
         candidate = {**self.cache, 'messages': (self.cache.get('messages', []) + [
@@ -749,6 +779,34 @@ if __name__ == '__main__':
         helper_main(sys.argv[2], sys.argv[3], sys.argv[4]); sys.exit(0)
     directory = storage_dir()
     app = QApplication(sys.argv[:1])
+    app.setStyleSheet('''
+        QWidget { background: #090e16; color: #e6edf4; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 13px; }
+        QMainWindow { background: #090e16; }
+        #mainSurface { background: #090e16; }
+        #brandTitle { color: #f5c842; font-size: 23px; font-weight: 800; letter-spacing: 2px; }
+        #brandSubtitle, #mutedText { color: #8393a5; font-size: 12px; }
+        #statusBanner { color: #48e5ee; background: #0e1b25; border: 1px solid #1e4450; border-radius: 3px; padding: 10px 14px; font-size: 11px; font-weight: 700; }
+        #sectionTitle { color: #48e5ee; font-size: 11px; font-weight: 800; letter-spacing: 1.4px; padding: 3px 0; }
+        QPushButton { color: #dce5ee; background: #141e2b; border: 1px solid #29384a; border-radius: 3px; padding: 9px 13px; font-weight: 650; }
+        QPushButton:hover { color: #f5c842; border-color: #f5c842; background: #1a2532; }
+        QPushButton:pressed { background: #29313a; }
+        QPushButton#primaryAction { color: #080d13; background: #f5c842; border: 1px solid #f5c842; font-weight: 900; }
+        QPushButton#primaryAction:hover { background: #ffe47d; border-color: #ffe47d; }
+        QLineEdit { color: #f3f6f9; background: #111925; border: 1px solid #304154; border-radius: 3px; padding: 12px 14px; selection-background-color: #48e5ee; }
+        QLineEdit:focus { border: 1px solid #48e5ee; }
+        QListWidget, QTextBrowser { background: #0d141e; border: 1px solid #1e2c3b; border-radius: 3px; padding: 8px; }
+        QListWidget::item { color: #c6d0da; padding: 8px 7px; border-bottom: 1px solid #172330; }
+        QListWidget::item:selected { color: #f5c842; background: #202938; border-left: 2px solid #f5c842; }
+        QSplitter::handle { background: #243343; width: 1px; }
+        QScrollBar:vertical { background: #0b1119; width: 10px; margin: 0; }
+        QScrollBar::handle:vertical { background: #33465a; min-height: 25px; border-radius: 4px; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        QSlider::groove:horizontal { height: 4px; background: #283747; }
+        QSlider::handle:horizontal { background: #48e5ee; width: 14px; margin: -5px 0; border-radius: 7px; }
+        QToolTip { color: #090e16; background: #f5c842; border: 0; padding: 4px; }
+        QDialog { background: #0b111a; }
+        QMessageBox, QInputDialog { background: #0b111a; }
+    ''')
     if directory is None:
         QMessageBox.critical(None, 'Запуск', 'Укажите пустой тестовый каталог аргументом командной строки.')
         sys.exit(1)

@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 MAX_MANIFEST = 128 * 1024
 MAX_PACKAGE = 1024 * 1024 * 1024
 ALLOWED_HOSTS = {'github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'}
-CURRENT_VERSION = '0.2.3'
+CURRENT_VERSION = '0.2.4'
 MANIFEST_URL = 'https://github.com/Sp0ge/LLMLIB/releases/latest/download/portableai-update.json'
 
 

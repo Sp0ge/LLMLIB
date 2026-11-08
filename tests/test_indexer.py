@@ -16,6 +16,13 @@ class IndexerTest(unittest.TestCase):
         self.assertIn('строки 1–2', hits[0]['locator'])
         self.assertEqual(search(chunks(blocks), 'неизвестно'), [])
 
+    def test_search_finds_descriptive_filename(self):
+        records = [
+            {'id': '1', 'path': 'архив/трудовой_договор.pdf', 'text': 'Документ подписан сторонами.'},
+            {'id': '2', 'path': 'архив/список_покупок.txt', 'text': 'Молоко и хлеб.'},
+        ]
+        self.assertEqual(search(records, 'трудовой договор')[0]['id'], '1')
+
     def test_zip_disallows_traversal_and_reads_safe_entry(self):
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:

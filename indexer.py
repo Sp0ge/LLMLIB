@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import re
 import tarfile
 import gzip
@@ -395,11 +396,28 @@ def fingerprint(data: bytes) -> str:
 
 
 def search(index: list[dict], query: str, limit: int = 5) -> list[dict]:
-    terms = set(re.findall(r'\w{2,}', query.casefold()))
+    """BM25-style lexical retrieval including file paths and exact phrases."""
+    raw_terms = re.findall(r'[^\W_]{2,}', query.casefold())
+    terms = set(raw_terms)
     if not terms: return []
+    def tokens(chunk):
+        return re.findall(r'[^\W_]{2,}', (chunk.get('text', '') + ' ' + chunk.get('path', '')).casefold())
+    tokenized = [tokens(chunk) for chunk in index]
+    document_frequency = Counter(term for words in tokenized for term in set(words))
+    average_length = max(1.0, sum(map(len, tokenized)) / max(1, len(tokenized)))
     scored = []
-    for chunk in index:
-        counts = Counter(re.findall(r'\w{2,}', chunk['text'].casefold()))
-        score = sum(min(counts[t], 5) for t in terms)
-        if score: scored.append((score, chunk))
+    total = len(index)
+    phrase = ' '.join(raw_terms)
+    for chunk, words in zip(index, tokenized):
+        counts = Counter(words)
+        length = len(words)
+        score = 0.0
+        for term in terms:
+            frequency = counts[term]
+            if not frequency: continue
+            inverse = math.log(1 + (total - document_frequency[term] + 0.5) / (document_frequency[term] + 0.5))
+            score += inverse * (frequency * 2.2) / (frequency + 1.2 * (0.25 + 0.75 * length / average_length))
+            if term in chunk.get('path', '').casefold(): score += inverse * 1.5
+        if phrase and phrase in chunk.get('text', '').casefold(): score += 3.0
+        if score > 0: scored.append((score, chunk))
     return [c for _, c in sorted(scored, key=lambda item: item[0], reverse=True)[:limit]]
