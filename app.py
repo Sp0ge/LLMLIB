@@ -1,16 +1,13 @@
 """Offline encrypted document browser: development build, no AI model bundled."""
-import base64
 import hmac
 import html
 import io
 import json
-import os
 import platform
 import sys
 import tempfile
 from pathlib import Path
 
-from cryptography.exceptions import InvalidTag
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt, QUrl, QThread, Signal, QTimer
 from PySide6.QtGui import QImage, QImageReader, QPixmap, QTextCharFormat, QColor, QTextCursor
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHBoxLayout, QInputDialog,
@@ -18,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHBoxLayout, 
     QLineEdit, QSlider, QVBoxLayout, QWidget)
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from indexer import chunks, extract, fingerprint, search
+from indexer import MAX_TEXT, chunks, extract, search
 from vault import add_file, load, save
 from storage import EncryptedStore
 from ai import LocalModel, hybrid_search
@@ -196,8 +193,6 @@ class App(QMainWindow):
         split.addWidget(right); split.setSizes([250, 800])
 
     def start(self):
-        import shutil
-
         if not self.directory.is_dir():
             QMessageBox.critical(self, 'Ошибка', 'Каталог не существует.')
             return False
@@ -220,6 +215,13 @@ class App(QMainWindow):
             for p in self.directory.iterdir():
                 is_hidden = p.name.startswith('.') or p.name in hidden_system
 
+                if sys.platform == 'darwin':
+                    try:
+                        import stat
+                        is_hidden = is_hidden or bool(p.lstat().st_flags & getattr(stat, 'UF_HIDDEN', 0))
+                    except (AttributeError, OSError):
+                        pass
+
                 if sys.platform == 'win32':
                     try:
                         import ctypes
@@ -233,19 +235,9 @@ class App(QMainWindow):
                     continue
 
                 if is_hidden:
-                    try:
-                        if p.is_dir() and not p.is_symlink():
-                            shutil.rmtree(p)
-                        else:
-                            p.unlink()
-                    except OSError as exc:
-                        QMessageBox.critical(
-                            self,
-                            'Ошибка очистки',
-                            f'Не удалось удалить скрытый файл или каталог:\n'
-                            f'{p.name}\n\n{exc}'
-                        )
-                        return False
+                    # Leave hidden files and OS metadata untouched. They are not user data
+                    # for the initial-empty-drive check and must never be removed here.
+                    continue
                 else:
                     unexpected.append(p.name)
 
@@ -507,6 +499,8 @@ class App(QMainWindow):
                         result[key] = []; warnings[key] = [record['name'] + ': файл больше лимита текстового анализатора (10 МБ)']; continue
                     output = io.BytesIO(); store.read_to(record, output)
                     blocks, warn = extract(record['name'], output.getvalue())
+                    if sum(len(block.get('text', '')) for block in blocks) > MAX_TEXT:
+                        warn.append(record['name'] + ': индекс ограничен первыми 2 млн символов')
                     result[key], warnings[key] = chunks(blocks), warn
                     for i, chunk in enumerate(result[key]): chunk['id'] = key + ':' + str(i)
                 if model and runtime and any(group for group in result.values()):
@@ -808,9 +802,9 @@ class App(QMainWindow):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 6 and sys.argv[1] == '--apply-update':
+    if len(sys.argv) == 5 and sys.argv[1] == '--apply-update':
         from updater import helper_main
-        helper_main(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]); sys.exit(0)
+        helper_main(sys.argv[2], sys.argv[3], sys.argv[4]); sys.exit(0)
     directory = storage_dir()
     app = QApplication(sys.argv[:1])
     if directory is None:

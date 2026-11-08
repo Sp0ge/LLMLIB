@@ -143,7 +143,9 @@ def extract_7z(name: str, data: bytes, depth: int) -> tuple[list[dict], list[str
                 parts = PurePosixPath(path).parts
                 if member.is_directory:
                     continue
-                if path.startswith('/') or '..' in parts or re.match(r'^[A-Za-z]:', path) or member.is_symlink or member.is_junction or member.is_socket:
+                if (path.startswith('/') or '..' in parts or re.match(r'^[A-Za-z]:', path) or
+                        getattr(member, 'is_symlink', False) or getattr(member, 'is_junction', False) or
+                        getattr(member, 'is_socket', False)):
                     warnings.append(f'{name}!/{path}: небезопасный путь или ссылка'); continue
                 size = member.uncompressed or 0
                 compressed = member.compressed or 0
@@ -363,9 +365,14 @@ def extract_tar_or_gzip(name, data, depth):
 
 def chunks(blocks: list[dict]) -> list[dict]:
     out = []
+    used = 0
     for block in blocks:
+        remaining = MAX_TEXT - used
+        if remaining <= 0: break
+        text_source = block['text'][:remaining]
+        used += len(text_source)
         if block['path'].lower().endswith(('.srt', '.vtt')):
-            for cue in re.split(r'\r?\n\s*\r?\n', block['text']):
+            for cue in re.split(r'\r?\n\s*\r?\n', text_source):
                 match = re.search(r'(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->', cue)
                 if not match: continue
                 hour, minute, second, ms = map(int, match.groups())
@@ -375,7 +382,7 @@ def chunks(blocks: list[dict]) -> list[dict]:
                     out.append({'path': block['path'], 'locator': 'таймкод ' + match.group(0).split(' ')[0],
                                 'text': text[:6000], 'timestamp_ms': stamp})
             continue
-        lines = block['text'].splitlines()
+        lines = text_source.splitlines()
         for start in range(0, len(lines), 25):
             text = '\n'.join(lines[start:start + 30]).strip()
             if text:

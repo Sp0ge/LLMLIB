@@ -1,4 +1,4 @@
-name: Build PortableAI development package
+name: Build PortableAI packages
 on:
   workflow_dispatch:
   push:
@@ -35,12 +35,24 @@ jobs:
         run: |
           git clone --depth 1 --branch b10488 https://github.com/ggml-org/llama.cpp.git llama-source
           python -c "import subprocess; assert subprocess.check_output(['git','-C','llama-source','rev-parse','HEAD'], text=True).strip() == '9d77fa17254e1dee4b9e92504c91611a60b1359f'"
+      - name: Configure CPU engine on Windows
+        if: runner.os == 'Windows'
+        run: |
+          cmake -S llama-source -B llama-build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_OPENMP=OFF -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+      - name: Configure CPU engine on macOS
+        if: runner.os == 'macOS'
+        run: |
+          cmake -S llama-source -B llama-build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=OFF -DGGML_OPENMP=OFF -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF
       - name: Build CPU-only engine
         run: |
-          cmake -S llama-source -B llama-build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=OFF -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_CURL=OFF
           cmake --build llama-build --config Release --target llama-server --parallel 4
       - name: Package application
         run: python package.py ${{ matrix.server }}
+      - name: Sign macOS bundle for integrity checks
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep --sign - --timestamp=none dist/PortableAI.app
+          codesign --verify --deep --strict dist/PortableAI.app
       - name: Archive macOS application
         if: runner.os == 'macOS'
         run: ditto -c -k --norsrc --keepParent dist/PortableAI.app dist/PortableAI-${{ matrix.platform }}.zip

@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 MAX_MANIFEST = 128 * 1024
 MAX_PACKAGE = 1024 * 1024 * 1024
 ALLOWED_HOSTS = {'github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'}
-CURRENT_VERSION = '0.2.0'
+CURRENT_VERSION = '0.2.1'
 MANIFEST_URL = 'https://github.com/Sp0ge/LLMLIB/releases/latest/download/portableai-update.json'
 
 
@@ -137,6 +137,7 @@ def install_replacement(target, replacement):
     try:
         os.replace(replacement, target)
     except BaseException:
+        _clear_hidden(backup)
         os.replace(backup, target)
         raise
     return backup
@@ -159,30 +160,60 @@ def prepare_replacement(staged, target):
     try:
         with zipfile.ZipFile(staged) as archive:
             infos = archive.infolist()
-            if len(infos) > 10000: raise ValueError('слишком много файлов в пакете')
+            if len(infos) > 50000: raise ValueError('слишком много файлов в пакете')
+            links, extracted = {}, set()
             for info in infos:
                 from pathlib import PurePosixPath
                 raw = info.filename.replace('\\', '/')
                 parts = PurePosixPath(raw).parts
                 if not parts or parts[0] != 'PortableAI.app' or '..' in parts or raw.startswith('/'):
                     raise ValueError('небезопасный путь в пакете')
-                if stat.S_ISLNK(info.external_attr >> 16): raise ValueError('ссылки в пакете не поддерживаются')
+                relative = PurePosixPath(*parts[1:]).as_posix()
+                if relative in {'', '.'}:
+                    continue
+                if relative in extracted or relative in links:
+                    raise ValueError('повторяющийся путь в пакете')
+                mode = info.external_attr >> 16
+                file_type = stat.S_IFMT(mode)
+                is_link = file_type == stat.S_IFLNK
+                is_directory = info.is_dir() or file_type == stat.S_IFDIR
+                if file_type not in (0, stat.S_IFREG, stat.S_IFDIR, stat.S_IFLNK):
+                    raise ValueError('специальные файлы в пакете запрещены')
                 total += info.file_size
                 if total > 2 * MAX_PACKAGE or info.file_size > MAX_PACKAGE:
                     raise ValueError('слишком большой распакованный пакет')
                 # Drop the wrapper directory; result itself is the replacement .app.
-                destination = result.joinpath(*parts[1:])
-                if info.is_dir(): destination.mkdir(parents=True, exist_ok=True); continue
+                destination = result.joinpath(*PurePosixPath(relative).parts)
+                if is_link:
+                    with archive.open(info) as source:
+                        link_target = source.read(4097).decode('utf-8')
+                    if len(link_target) > 4096 or '\x00' in link_target or link_target.startswith('/') or '\\' in link_target:
+                        raise ValueError('небезопасная цель ссылки в пакете')
+                    resolved = os.path.normpath(os.path.join(os.path.dirname(relative), link_target)).replace('\\', '/')
+                    if resolved in {'.', '..'} or resolved.startswith('../'):
+                        raise ValueError('ссылка выходит за каталог приложения')
+                    links[relative] = link_target
+                    continue
+                extracted.add(relative)
+                if is_directory: destination.mkdir(parents=True, exist_ok=True); continue
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(info) as source, destination.open('xb') as output:
                     shutil.copyfileobj(source, output, 1024 * 1024)
-                mode = (info.external_attr >> 16) & 0o777
-                if mode: destination.chmod(mode & 0o755)
+                permissions = mode & 0o777
+                if permissions: destination.chmod(permissions & 0o755)
+            if any(path.startswith(link + '/') for path in links for link in links):
+                raise ValueError('каталог приложения пересекается с символической ссылкой')
+            if any(path.startswith(link + '/') for path in extracted for link in links):
+                raise ValueError('каталог приложения пересекается с символической ссылкой')
+            for relative, link_target in links.items():
+                destination = result.joinpath(*PurePosixPath(relative).parts)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                os.symlink(link_target, destination)
         if not (result / 'Contents/MacOS/PortableAI').is_file(): raise ValueError('исполняемый файл приложения отсутствует')
         if sys.platform == 'darwin':
             import subprocess
             subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(result)],
-                           check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                           check=True, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return result
     except BaseException:
         shutil.rmtree(result, ignore_errors=True)
@@ -217,12 +248,10 @@ def wait_for_process(pid, timeout=90):
         raise TimeoutError('предыдущий процесс не завершился')
 
 
-def helper_main(pid, parent_pid, target, replacement):
+def helper_main(pid, target, replacement):
     import shutil
     import subprocess
     wait_for_process(int(pid))
-    if os.name == 'nt' and int(parent_pid) > 0 and int(parent_pid) != int(pid):
-        wait_for_process(int(parent_pid))
     target = Path(target)
     backup = install_replacement(target, replacement)
     try:
@@ -230,7 +259,7 @@ def helper_main(pid, parent_pid, target, replacement):
         subprocess.Popen([str(executable)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except BaseException:
         failed = target.parent / ('.portableai-failed-' + os.urandom(8).hex())
-        os.replace(target, failed); os.replace(backup, target)
+        os.replace(target, failed); _clear_hidden(backup); os.replace(backup, target)
         raise
     # Backup is retained for recovery if the new application fails after launch.
     return backup
@@ -248,6 +277,6 @@ def launch_update_helper(target, replacement):
     else:
         executable = helper_dir / 'PortableAI.exe'
         shutil.copyfile(replacement, executable)
-    subprocess.Popen([str(executable), '--apply-update', str(os.getpid()), str(os.getppid()), str(target), str(replacement)],
+    subprocess.Popen([str(executable), '--apply-update', str(os.getpid()), str(target), str(replacement)],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      close_fds=True)

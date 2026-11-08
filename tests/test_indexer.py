@@ -2,6 +2,8 @@ import io
 import unittest
 import zipfile
 import tarfile
+from pathlib import Path
+import tempfile
 from indexer import chunks, extract, search
 
 
@@ -72,6 +74,25 @@ class IndexerTest(unittest.TestCase):
                 blocks, warnings = extract(name, data.getvalue())
                 self.assertEqual(warnings, [])
                 self.assertIn(expected, '\n'.join(block['text'] for block in blocks))
+
+    def test_7z_reads_supported_files_without_extracting_to_disk(self):
+        import py7zr
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'notes.txt'
+            source.write_text('Текст из безопасного архива', encoding='utf-8')
+            archive_data = io.BytesIO()
+            with py7zr.SevenZipFile(archive_data, 'w') as archive:
+                archive.write(source, 'folder/notes.txt')
+            blocks, warnings = extract('notes.7z', archive_data.getvalue())
+        self.assertFalse(warnings)
+        self.assertIn('Текст из безопасного архива', '\n'.join(block['text'] for block in blocks))
+
+    def test_html_and_rtf_ignore_markup_and_keep_text(self):
+        html_blocks, _ = extract('page.html', b'<html><head>Hidden title</head><body>Hello<script>secret()</script></body></html>')
+        rtf_blocks, _ = extract('notes.rtf', br'{\rtf1\ansi Hello\par world}')
+        self.assertIn('Hello', html_blocks[0]['text'])
+        self.assertNotIn('secret', html_blocks[0]['text'])
+        self.assertIn('Hello\nworld', rtf_blocks[0]['text'])
 
 
 if __name__ == '__main__': unittest.main()

@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import unittest
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -87,6 +88,42 @@ class InstallerTest(unittest.TestCase):
             with self.assertRaises(ValueError): prepare_replacement(staged, target)
             self.assertFalse((root.parent / 'disk.data').exists())
 
+    def test_safe_app_symlink_is_restored_and_escape_is_rejected(self):
+        import stat
+        import tempfile
+        import zipfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from updater import prepare_replacement
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); target = root / 'PortableAI.app'; target.mkdir()
+            staged = root / 'safe.zip'
+            with zipfile.ZipFile(staged, 'w') as archive:
+                archive.writestr('PortableAI.app/Contents/MacOS/PortableAI', b'app')
+                archive.writestr('PortableAI.app/Contents/Frameworks/lib.dylib', b'library')
+                link = zipfile.ZipInfo('PortableAI.app/Contents/Resources/lib.dylib')
+                link.create_system = 3
+                link.external_attr = (stat.S_IFLNK | 0o777) << 16
+                archive.writestr(link, '../Frameworks/lib.dylib')
+            with patch('updater.sys.platform', 'linux'):
+                replacement = prepare_replacement(staged, target)
+            try:
+                restored = replacement / 'Contents/Resources/lib.dylib'
+                self.assertTrue(restored.is_symlink())
+                self.assertEqual(restored.readlink().as_posix(), '../Frameworks/lib.dylib')
+            finally:
+                import shutil
+                shutil.rmtree(replacement)
+
+            unsafe = root / 'unsafe.zip'
+            with zipfile.ZipFile(unsafe, 'w') as archive:
+                link = zipfile.ZipInfo('PortableAI.app/Contents/Resources/escape')
+                link.create_system = 3
+                link.external_attr = (stat.S_IFLNK | 0o777) << 16
+                archive.writestr(link, '../../../disk.data')
+            with self.assertRaises(ValueError): prepare_replacement(unsafe, target)
+
     def test_helper_argument_order(self):
         import tempfile
         from pathlib import Path
@@ -100,7 +137,8 @@ class InstallerTest(unittest.TestCase):
                 launch_update_helper(target, replacement)
                 args = process.call_args.args[0]
                 self.assertEqual(args[1], '--apply-update')
-                self.assertEqual(args[4:], [str(target), str(replacement)])
+                self.assertEqual(args[2], str(os.getpid()))
+                self.assertEqual(args[3:], [str(target), str(replacement)])
 
     def test_helper_applies_update_without_touching_user_data(self):
         import tempfile
@@ -111,8 +149,9 @@ class InstallerTest(unittest.TestCase):
             root = Path(directory); target = root / 'PortableAI.exe'; target.write_bytes(b'old')
             replacement = root / '.portableai-update-test'; replacement.write_bytes(b'new')
             data = root / 'disk.data'; data.write_bytes(b'user data')
-            with patch('updater.wait_for_process'), patch('subprocess.Popen'):
-                backup = helper_main(123, 1, target, replacement)
+            with patch('updater.wait_for_process') as wait, patch('subprocess.Popen'):
+                backup = helper_main(123, target, replacement)
+            wait.assert_called_once_with(123)
             self.assertEqual(target.read_bytes(), b'new')
             self.assertEqual(data.read_bytes(), b'user data')
             self.assertEqual(backup.read_bytes(), b'old')
