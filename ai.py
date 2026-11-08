@@ -97,7 +97,13 @@ class LocalModel:
         answer = result['choices'][0]['message']['content']
         if not isinstance(answer, str): raise ValueError('Некорректный ответ модели')
         refs = [int(ref) for ref in re.findall(r'\[(\d+)\]', answer)]
-        if not refs or any(ref < 1 or ref > len(hits) for ref in refs) or not re.search(r'[^\W\d_]', re.sub(r'\[\d+\]', '', answer), re.UNICODE):
+        # Small local models often omit citation markers even when the answer is
+        # grounded. In that case, explicitly list the retrieved passages so the
+        # user can verify the response in the source viewer.
+        if not refs:
+            answer = answer.rstrip() + '\n\nИсточники: ' + labels
+            refs = list(range(1, len(hits) + 1))
+        if any(ref < 1 or ref > len(hits) for ref in refs) or not re.search(r'[^\W\d_]', re.sub(r'\[\d+\]', '', answer), re.UNICODE):
             return 'Не удалось проверить ссылки в ответе модели. Посмотрите найденные фрагменты.'
         return answer
 

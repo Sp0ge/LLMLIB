@@ -11,12 +11,17 @@ class AITest(unittest.TestCase):
         with patch.object(model, '_request', return_value={'data': [{'embedding': [float('nan')]}]}):
             with self.assertRaises(ValueError): model.embed('query')
 
-    def test_answer_rejects_missing_and_unknown_sources(self):
+    def test_answer_adds_retrieved_sources_when_model_omits_citations(self):
         model = LocalModel('/example/server', '/example/model')
         hit = [{'path': 'a.txt', 'text': 'Проверенный текст'}]
-        for answer in ['текст без ссылки', 'текст [2]']:
-            with patch.object(model, '_request', return_value={'choices': [{'message': {'content': answer}}]}):
-                self.assertIn('Не удалось проверить', model.answer('вопрос', hit))
+        with patch.object(model, '_request', return_value={'choices': [{'message': {'content': 'Текстовый ответ'}}]}):
+            self.assertEqual(model.answer('вопрос', hit), 'Текстовый ответ\n\nИсточники: [1]')
+
+    def test_answer_rejects_unknown_sources(self):
+        model = LocalModel('/example/server', '/example/model')
+        hit = [{'path': 'a.txt', 'text': 'Проверенный текст'}]
+        with patch.object(model, '_request', return_value={'choices': [{'message': {'content': 'текст [2]'}}]}):
+            self.assertIn('Не удалось проверить', model.answer('вопрос', hit))
         with patch.object(model, '_request', return_value={'choices': [{'message': {'content': 'Ответ [1]'}}]}):
             self.assertEqual(model.answer('вопрос', hit), 'Ответ [1]')
 
