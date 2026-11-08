@@ -1,9 +1,12 @@
 """Fetch the two fixed public GGUF assets and verify their pinned SHA-256."""
 import hashlib
+import sys
 import tempfile
 import urllib.request
 from pathlib import Path
 
+# `python tools/fetch_models.py` places only tools/ on sys.path in clean CI jobs.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from bundled_models import MODEL_FILES, MODEL_SHA256
 
 
