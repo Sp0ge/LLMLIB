@@ -9,3 +9,5 @@ data.cache
 bundle-models/
 .venv/
 .DS_Store
+/app_builds
+/.pyinstaller_build
